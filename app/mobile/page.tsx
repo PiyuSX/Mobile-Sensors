@@ -39,7 +39,7 @@ class OneEuroFilter {
     const dt = Math.max((now - this.lastTime) / 1000, 0.001); // seconds
     this.lastTime = now;
 
-    // Estimate derivative
+    // Estimate derivative with heavy smoothing
     const dx = (value - this.x) / dt;
     const edx = this.alpha(this.dCutoff, dt) * dx + (1 - this.alpha(this.dCutoff, dt)) * this.dx;
     this.dx = edx;
@@ -59,7 +59,30 @@ class OneEuroFilter {
   }
 }
 
-const SEND_INTERVAL = 1000 / 60; // 60 FPS
+// Extra smooth exponential moving average
+class SmoothFilter {
+  private value: number | null = null;
+  private smoothing: number;
+  
+  constructor(smoothing = 0.15) {
+    this.smoothing = smoothing; // Lower = smoother (0.1-0.3 recommended)
+  }
+  
+  filter(input: number): number {
+    if (this.value === null) {
+      this.value = input;
+      return input;
+    }
+    this.value += this.smoothing * (input - this.value);
+    return this.value;
+  }
+  
+  reset() {
+    this.value = null;
+  }
+}
+
+const SEND_INTERVAL = 1000 / 120; // 120 FPS for ultra-smooth updates
 
 export default function MobilePage() {
   const [pitch, setPitch] = useState(0);
@@ -80,10 +103,13 @@ export default function MobilePage() {
   // Reference beta (initial tilt) for centering
   const betaRef = useRef<number | null>(null);
   
-  // One-Euro filters - tuned for smooth but responsive feel
-  // Lower minCutoff = smoother, higher beta = more responsive to speed
-  const pitchFilter = useRef(new OneEuroFilter(0.8, 0.02, 1.0));
-  const yawFilter = useRef(new OneEuroFilter(1.5, 0.01, 1.0));
+  // Cascaded filters for ultra-smooth output
+  // Stage 1: One-Euro (adaptive - responsive when moving, smooth when still)
+  // Stage 2: SmoothFilter (extra polish)
+  const pitchOneEuro = useRef(new OneEuroFilter(0.5, 0.015, 0.8));  // Very smooth
+  const yawOneEuro = useRef(new OneEuroFilter(0.8, 0.01, 0.8));
+  const pitchSmooth = useRef(new SmoothFilter(0.2));  // Extra smoothing pass
+  const yawSmooth = useRef(new SmoothFilter(0.25));
 
   // --- Auto-send sensor data via POST ---
   useEffect(() => {
@@ -116,8 +142,10 @@ export default function MobilePage() {
     yawAccumulator.current = 0;
     lastGyroTime.current = performance.now();
     betaRef.current = null; // Will capture initial position
-    pitchFilter.current.reset();
-    yawFilter.current.reset();
+    pitchOneEuro.current.reset();
+    yawOneEuro.current.reset();
+    pitchSmooth.current.reset();
+    yawSmooth.current.reset();
 
     // === GYROSCOPE: Left/Right aiming (relative, like mouse) ===
     function handleMotion(e: DeviceMotionEvent) {
@@ -143,12 +171,13 @@ export default function MobilePage() {
       }
       yawAccumulator.current = clamp(yawAccumulator.current, -maxYaw, maxYaw);
       
-      // Apply One-Euro filter for smooth output
-      const smoothYaw = yawFilter.current.filter(yawAccumulator.current, now);
+      // Cascaded filtering: One-Euro (adaptive) -> Smooth (polish)
+      const euroYaw = yawOneEuro.current.filter(yawAccumulator.current, now);
+      const smoothYaw = yawSmooth.current.filter(euroYaw);
       
       // Map to roll: INVERTED - turning left = positive roll = crosshair left
       rollRef.current = -smoothYaw;
-      setRoll(smoothYaw);
+      setRoll(-smoothYaw);
     }
 
     // === ORIENTATION: Up/Down aiming (absolute angle) ===
@@ -170,8 +199,9 @@ export default function MobilePage() {
       const PITCH_SENSITIVITY = 2.5;
       const rawPitch = clamp(deltaBeta * PITCH_SENSITIVITY, -60, 60);
       
-      // Apply One-Euro filter for smooth output
-      const smoothPitch = pitchFilter.current.filter(rawPitch, now);
+      // Cascaded filtering: One-Euro (adaptive) -> Smooth (polish)
+      const euroPitch = pitchOneEuro.current.filter(rawPitch, now);
+      const smoothPitch = pitchSmooth.current.filter(euroPitch);
       
       pitchRef.current = smoothPitch;
       setPitch(smoothPitch);

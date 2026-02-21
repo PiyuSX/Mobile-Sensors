@@ -4,9 +4,9 @@ import { useRef, useState, useEffect } from "react";
 
 // --- Config ---
 const SENSITIVITY = 1.2; // Aim sensitivity multiplier
-const POLL_INTERVAL = 1000 / 60; // 60 FPS polling
+const POLL_INTERVAL = 1000 / 120; // 120 FPS polling for smoother data
 const CROSSHAIR_SIZE = 25;
-const LERP_SPEED = 0.25; // Smoothing factor (0-1, higher = faster/more responsive)
+const LERP_SPEED = 0.12; // Smoothing factor (lower = smoother, 0.08-0.2 recommended)
 
 export default function PcPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -93,9 +93,16 @@ export default function PcPage() {
       targetX.current = Math.max(0.03, Math.min(0.97, targetX.current));
       targetY.current = Math.max(0.06, Math.min(0.97, targetY.current));
       
-      // Smooth interpolation (lerp) for buttery movement
-      currentX.current += (targetX.current - currentX.current) * LERP_SPEED;
-      currentY.current += (targetY.current - currentY.current) * LERP_SPEED;
+      // Smooth interpolation with easing - smooth deceleration as it approaches target
+      const dx = targetX.current - currentX.current;
+      const dy = targetY.current - currentY.current;
+      
+      // Adaptive lerp: faster when far, slower when close (eased stopping)
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      const adaptiveLerp = Math.min(LERP_SPEED + distance * 0.3, 0.4);
+      
+      currentX.current += dx * adaptiveLerp;
+      currentY.current += dy * adaptiveLerp;
       
       // Convert to pixel coordinates
       const crossX = currentX.current * w;
