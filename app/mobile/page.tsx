@@ -65,9 +65,12 @@ export default function MobilePage() {
   const rollRef = useRef(0);
   const fireRef = useRef(0);
   
+  // Reference alpha (compass heading) when motion started - for relative left/right
+  const alphaRef = useRef<number | null>(null);
+  
   // Filters for smooth output
-  const pitchFilter = useRef(new LowPassFilter(0.4));
-  const rollFilter = useRef(new LowPassFilter(0.4));
+  const pitchFilter = useRef(new LowPassFilter(0.5));
+  const rollFilter = useRef(new LowPassFilter(0.5));
 
   // --- Auto-send sensor data via POST ---
   useEffect(() => {
@@ -94,35 +97,44 @@ export default function MobilePage() {
   // --- Orientation listener ---
   useEffect(() => {
     if (!motionEnabled) return;
+    
+    // Reset reference when enabling
+    alphaRef.current = null;
 
     function handleOrientation(e: DeviceOrientationEvent) {
-      if (e.beta == null || e.gamma == null) return;
+      if (e.alpha == null || e.beta == null || e.gamma == null) return;
       
-      // === GUN CONTROLLER PHYSICS ===
-      // Phone held like a pistol in landscape mode:
-      // - Power button side = TOP (like top of gun)
-      // - Volume buttons = BOTTOM (like grip)
-      // - Screen = front of gun (points at target)
-      // - The dot on screen = crosshair/aim point
+      // === GUN CONTROLLER - LANDSCAPE MODE ===
+      // Phone held like a pistol:
+      // - Power button UP, Volume buttons DOWN
+      // - Screen visible to user, back camera points at target
       //
-      // PITCH (up/down aiming):
-      // - Raise barrel (point gun at ceiling) → aim goes UP (+pitch)
-      // - Lower barrel (point gun at floor) → aim goes DOWN (-pitch)
-      // - Uses gamma: tilting top edge up = positive gamma
+      // LEFT/RIGHT AIMING (roll): Use ALPHA (compass heading)
+      // - Turn your hand/body left → crosshair moves left
+      // - Turn your hand/body right → crosshair moves right
+      // - Much more natural than twisting the phone!
       //
-      // ROLL (left/right aiming):
-      // - Twist gun left (like turning steering wheel left) → aim goes LEFT (-roll)
-      // - Twist gun right → aim goes RIGHT (+roll)
-      // - Uses beta: adjusted for landscape orientation
+      // UP/DOWN AIMING (pitch): Use BETA (tilt forward/back)
+      // - Tilt barrel up (point at ceiling) → crosshair moves up
+      // - Tilt barrel down (point at floor) → crosshair moves down
       
-      // Pitch: gamma directly maps to vertical aim
-      const rawPitch = clamp(-e.gamma, -60, 60);
+      // Set initial alpha as center reference
+      if (alphaRef.current === null) {
+        alphaRef.current = e.alpha;
+      }
       
-      // Roll: beta needs adjustment since phone is held ~horizontal
-      // When phone is level facing forward, beta ≈ 90°
-      // Subtract 90 to center it, then use for left/right
-      const adjustedBeta = e.beta - 90;
-      const rawRoll = clamp(adjustedBeta, -45, 45);
+      // ROLL: Relative compass heading (left/right aim)
+      // Calculate difference from starting position
+      let deltaAlpha = e.alpha - alphaRef.current;
+      // Wrap around 360° boundary
+      if (deltaAlpha > 180) deltaAlpha -= 360;
+      if (deltaAlpha < -180) deltaAlpha += 360;
+      const rawRoll = clamp(-deltaAlpha, -45, 45); // Invert so turning right = positive
+      
+      // PITCH: Beta tells how much phone is tilted forward/back
+      // When holding gun style, beta around 45-90° is "level"
+      // Tilt up = lower beta, Tilt down = higher beta
+      const rawPitch = clamp(-(e.beta - 60), -60, 60); // Center around 60°, invert for natural feel
       
       // Smooth filtering for steady aim
       const pitchVal = pitchFilter.current.filter(rawPitch);
