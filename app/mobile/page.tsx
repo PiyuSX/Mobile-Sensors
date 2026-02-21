@@ -141,8 +141,8 @@ export default function MobilePage() {
       // Apply One-Euro filter for smooth output
       const smoothYaw = yawFilter.current.filter(yawAccumulator.current, now);
       
-      // Map to roll: positive yaw (turning right) = positive roll
-      rollRef.current = smoothYaw;
+      // Map to roll: INVERTED - turning left = positive roll = crosshair left
+      rollRef.current = -smoothYaw;
       setRoll(smoothYaw);
     }
 
