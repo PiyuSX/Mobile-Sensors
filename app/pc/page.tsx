@@ -6,7 +6,7 @@ import { useRef, useState, useEffect } from "react";
 const SENSITIVITY = 1.2; // Aim sensitivity multiplier
 const POLL_INTERVAL = 1000 / 60; // 60 FPS polling
 const CROSSHAIR_SIZE = 25;
-const LERP_SPEED = 0.15; // Smoothing factor for crosshair movement (0-1, higher = faster)
+const LERP_SPEED = 0.25; // Smoothing factor (0-1, higher = faster/more responsive)
 
 export default function PcPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);

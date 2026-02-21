@@ -77,9 +77,13 @@ export default function MobilePage() {
   const yawAccumulator = useRef(0);
   const lastGyroTime = useRef(0);
   
-  // One-Euro filters for buttery smooth output
-  const pitchFilter = useRef(new OneEuroFilter(1.5, 0.01, 1.0));
-  const yawFilter = useRef(new OneEuroFilter(2.0, 0.005, 1.0));
+  // Reference beta (initial tilt) for centering
+  const betaRef = useRef<number | null>(null);
+  
+  // One-Euro filters - tuned for smooth but responsive feel
+  // Lower minCutoff = smoother, higher beta = more responsive to speed
+  const pitchFilter = useRef(new OneEuroFilter(0.8, 0.02, 1.0));
+  const yawFilter = useRef(new OneEuroFilter(1.5, 0.01, 1.0));
 
   // --- Auto-send sensor data via POST ---
   useEffect(() => {
@@ -111,6 +115,7 @@ export default function MobilePage() {
     // Reset on enable
     yawAccumulator.current = 0;
     lastGyroTime.current = performance.now();
+    betaRef.current = null; // Will capture initial position
     pitchFilter.current.reset();
     yawFilter.current.reset();
 
@@ -152,21 +157,21 @@ export default function MobilePage() {
       
       const now = performance.now();
       
-      // In this orientation (bottom=barrel, screen=sideways):
-      // BETA = forward/backward tilt of the barrel
-      // When barrel points up → beta decreases (or increases depending on screen direction)
-      // When barrel points down → beta changes opposite direction
-      //
-      // Neutral position: phone roughly horizontal, barrel pointing forward
-      // beta ≈ 90° when phone is vertical screen-up, 0° when flat
-      // When held gun-style with barrel forward, beta is around 80-100°
+      // Capture initial beta as the "center" position
+      if (betaRef.current === null) {
+        betaRef.current = e.beta;
+      }
       
-      // Center around 90° (horizontal forward), invert for natural feel
-      // Barrel up (beta < 90) → positive pitch → aim up
-      // Barrel down (beta > 90) → negative pitch → aim down
-      const rawPitch = clamp(90 - e.beta, -60, 60);
+      // Calculate delta from initial position
+      // Tilt barrel up (beta decreases) → positive pitch → aim up
+      // Tilt barrel down (beta increases) → negative pitch → aim down
+      const deltaBeta = betaRef.current - e.beta;
       
-      // Apply One-Euro filter
+      // Apply sensitivity multiplier (2x = half the tilt needed)
+      const PITCH_SENSITIVITY = 2.5;
+      const rawPitch = clamp(deltaBeta * PITCH_SENSITIVITY, -60, 60);
+      
+      // Apply One-Euro filter for smooth output
       const smoothPitch = pitchFilter.current.filter(rawPitch, now);
       
       pitchRef.current = smoothPitch;
@@ -270,7 +275,7 @@ export default function MobilePage() {
           )}
           {motionEnabled && (
             <button
-              onClick={() => { yawAccumulator.current = 0; }}
+              onClick={() => { yawAccumulator.current = 0; betaRef.current = null; }}
               style={{ padding: "8px 18px", borderRadius: 4, border: "none", background: "#444", color: "#fff", cursor: "pointer", fontSize: 14 }}
             >
               Recenter
