@@ -25,7 +25,7 @@ npm run dev
 
 Open `http://localhost:3000/pc` on your PC browser and `http://localhost:3000/mobile` on your phone (they must be on the same network -- use your LAN IP).
 
-**Note:** DeviceOrientation requires HTTPS on most browsers. For local testing, use the Cloudflare tunnel approach below, or use Chrome DevTools sensor emulation.
+**Note:** DeviceOrientation requires HTTPS on most browsers. For local testing, use ngrok (see below) or Chrome DevTools sensor emulation.
 
 ## Deploy to Vercel
 
@@ -54,28 +54,37 @@ You should see:
 WebSocket relay server running on ws://localhost:8787/ws
 ```
 
-## Expose with Cloudflare Tunnel
+## Expose with ngrok
 
-To make the server accessible from the internet (required for phone -> laptop):
+To make the server reachable from the internet (required for phone -> laptop when not on the same LAN, and for HTTPS/WSS):
 
 ```bash
-cloudflared tunnel --url http://localhost:8787
+ngrok http 8787
 ```
 
-Cloudflare will print a URL like:
+ngrok will print a forwarding URL like:
 ```
-https://some-random-words.trycloudflare.com
+Forwarding  https://xxxx-xx-xx-xx-xx.ngrok-free.app -> http://localhost:8787
 ```
 
 The WebSocket URL to paste into both the PC and Mobile pages is:
 ```
-wss://some-random-words.trycloudflare.com/ws
+wss://xxxx-xx-xx-xx-xx.ngrok-free.app/ws
 ```
+
+### Other tunnel options
+
+Any tunnel that gives you an HTTPS URL pointing at `localhost:8787` will work. Examples:
+- **ngrok**: `ngrok http 8787`
+- **localtunnel**: `npx localtunnel --port 8787`
+- **bore**: `bore local 8787 --to bore.pub`
+
+Take the HTTPS hostname you get and use `wss://<hostname>/ws`.
 
 ## Usage
 
-1. Start the relay server and Cloudflare tunnel as described above.
-2. Open `/pc` on your computer. Paste the `wss://...trycloudflare.com/ws` URL and click Connect.
+1. Start the relay server and tunnel as described above.
+2. Open `/pc` on your computer. Paste the `wss://` URL and click Connect.
 3. Open `/mobile` on your phone. Paste the same URL and click Connect.
 4. Tap **Enable Motion** on the phone (required on iOS for permission).
 5. Tilt your phone forward/backward to move the dot up/down.

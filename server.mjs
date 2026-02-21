@@ -38,4 +38,4 @@ wss.on("connection", (ws, req) => {
 });
 
 console.log(`WebSocket relay server running on ws://localhost:${PORT}${PATH}`);
-console.log(`Expose with: cloudflared tunnel --url http://localhost:${PORT}`);
+console.log(`Expose with ngrok: ngrok http ${PORT}`);
