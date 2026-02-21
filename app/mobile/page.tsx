@@ -65,12 +65,9 @@ export default function MobilePage() {
   const rollRef = useRef(0);
   const fireRef = useRef(0);
   
-  // Reference alpha (compass heading) when motion started - for relative left/right
-  const alphaRef = useRef<number | null>(null);
-  
-  // Filters for smooth output
-  const pitchFilter = useRef(new LowPassFilter(0.5));
-  const rollFilter = useRef(new LowPassFilter(0.5));
+  // Accumulated gyro values (like a mouse - integrate rotation rate)
+  const gyroYaw = useRef(0);   // Left/right accumulated rotation
+  const lastGyroTime = useRef(0);
 
   // --- Auto-send sensor data via POST ---
   useEffect(() => {
@@ -80,7 +77,7 @@ export default function MobilePage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            pitch: Math.round(pitchRef.current * 100) / 100, // Higher precision
+            pitch: Math.round(pitchRef.current * 100) / 100,
             roll: Math.round(rollRef.current * 100) / 100,
             fire: fireRef.current,
           }),
@@ -94,56 +91,61 @@ export default function MobilePage() {
     return () => clearInterval(timer);
   }, []);
 
-  // --- Orientation listener ---
+  // --- GYROSCOPE for left/right (fast & responsive like mouse) ---
   useEffect(() => {
     if (!motionEnabled) return;
     
-    // Reset reference when enabling
-    alphaRef.current = null;
+    // Reset accumulated yaw when starting
+    gyroYaw.current = 0;
+    lastGyroTime.current = performance.now();
+
+    function handleMotion(e: DeviceMotionEvent) {
+      if (!e.rotationRate) return;
+      
+      const now = performance.now();
+      const dt = (now - lastGyroTime.current) / 1000; // seconds
+      lastGyroTime.current = now;
+      
+      // In landscape mode (power button UP):
+      // rotationRate.alpha = rotation around Z axis = left/right yaw
+      // Positive = counterclockwise when looking at screen = turning LEFT
+      const yawRate = e.rotationRate.alpha ?? 0;
+      
+      // Integrate rotation rate to get position (like mouse movement)
+      // Scale down and invert: positive rate = turning left = negative roll
+      gyroYaw.current += yawRate * dt * 0.5; // 0.5 = sensitivity factor
+      
+      // Clamp to prevent going too far
+      gyroYaw.current = clamp(gyroYaw.current, -45, 45);
+      
+      // Apply directly - no filtering needed, gyro is already smooth
+      rollRef.current = -gyroYaw.current; // Invert: turn right = positive roll
+      setRoll(rollRef.current);
+    }
+
+    window.addEventListener("devicemotion", handleMotion);
+    return () => window.removeEventListener("devicemotion", handleMotion);
+  }, [motionEnabled]);
+
+  // --- ORIENTATION for up/down (gamma is perfect for this) ---
+  useEffect(() => {
+    if (!motionEnabled) return;
 
     function handleOrientation(e: DeviceOrientationEvent) {
-      if (e.alpha == null || e.beta == null || e.gamma == null) return;
+      if (e.gamma == null) return;
       
       // === GUN CONTROLLER - LANDSCAPE MODE ===
-      // Phone held like a pistol:
-      // - Power button UP, Volume buttons DOWN
-      // - Screen visible to user, back camera points at target
+      // Phone held sideways: power button UP, volume DOWN, screen facing you
       //
-      // LEFT/RIGHT AIMING (roll): Use ALPHA (compass heading)
-      // - Turn your hand/body left → crosshair moves left
-      // - Turn your hand/body right → crosshair moves right
-      // - Much more natural than twisting the phone!
-      //
-      // UP/DOWN AIMING (pitch): Use BETA (tilt forward/back)
-      // - Tilt barrel up (point at ceiling) → crosshair moves up
-      // - Tilt barrel down (point at floor) → crosshair moves down
+      // GAMMA controls vertical aim (pitch):
+      // - Tilt "barrel" UP (raise power button edge) → gamma negative → aim UP
+      // - Tilt "barrel" DOWN → gamma positive → aim DOWN
       
-      // Set initial alpha as center reference
-      if (alphaRef.current === null) {
-        alphaRef.current = e.alpha;
-      }
+      // Direct mapping, no filtering for instant response
+      const rawPitch = clamp(-e.gamma, -60, 60);
       
-      // ROLL: Relative compass heading (left/right aim)
-      // Calculate difference from starting position
-      let deltaAlpha = e.alpha - alphaRef.current;
-      // Wrap around 360° boundary
-      if (deltaAlpha > 180) deltaAlpha -= 360;
-      if (deltaAlpha < -180) deltaAlpha += 360;
-      const rawRoll = clamp(-deltaAlpha, -45, 45); // Invert so turning right = positive
-      
-      // PITCH: Beta tells how much phone is tilted forward/back
-      // When holding gun style, beta around 45-90° is "level"
-      // Tilt up = lower beta, Tilt down = higher beta
-      const rawPitch = clamp(-(e.beta - 60), -60, 60); // Center around 60°, invert for natural feel
-      
-      // Smooth filtering for steady aim
-      const pitchVal = pitchFilter.current.filter(rawPitch);
-      const rollVal = rollFilter.current.filter(rawRoll);
-      
-      pitchRef.current = pitchVal;
-      rollRef.current = rollVal;
-      setPitch(pitchVal);
-      setRoll(rollVal);
+      pitchRef.current = rawPitch;
+      setPitch(rawPitch);
     }
 
     window.addEventListener("deviceorientation", handleOrientation);
