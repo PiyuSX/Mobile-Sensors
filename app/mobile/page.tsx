@@ -162,12 +162,11 @@ export default function MobilePage() {
         betaRef.current = e.beta;
       }
       
-      // Calculate delta from initial position
-      // Tilt barrel up (beta decreases) → positive pitch → aim up
-      // Tilt barrel down (beta increases) → negative pitch → aim down
-      const deltaBeta = betaRef.current - e.beta;
+      // Calculate delta from initial position (INVERTED)
+      // Tilt barrel up → aim up, tilt barrel down → aim down
+      const deltaBeta = e.beta - betaRef.current;
       
-      // Apply sensitivity multiplier (2x = half the tilt needed)
+      // Apply sensitivity multiplier (2.5x = less tilt needed)
       const PITCH_SENSITIVITY = 2.5;
       const rawPitch = clamp(deltaBeta * PITCH_SENSITIVITY, -60, 60);
       
