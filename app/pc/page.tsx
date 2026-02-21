@@ -1,34 +1,40 @@
 "use client";
 
-import { useRef, useState, useEffect, useCallback } from "react";
-import { useWebSocket, type ConnectionStatus } from "@/lib/useWebSocket";
-import { parseSensorMessage } from "@/lib/types";
+import { useRef, useState, useEffect } from "react";
 
 // --- Smoothing / deadzone config ---
-const SMOOTHING = 0.15; // exponential smoothing factor (0..1, lower = smoother)
-const DEADZONE = 2; // degrees; ignore small jitter
+const SMOOTHING = 0.15;
+const DEADZONE = 2;
+const POLL_INTERVAL = 1000 / 30; // 30 FPS
 
 export default function PcPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [url, setUrl] = useState("");
   const [pitch, setPitch] = useState(0);
   const [fire, setFire] = useState(0);
+  const [connected, setConnected] = useState(false);
 
-  // Refs for animation loop (avoid stale closures)
   const smoothedPitch = useRef(0);
   const rawPitch = useRef(0);
   const fireRef = useRef(0);
 
-  const onMessage = useCallback((data: string) => {
-    const pkt = parseSensorMessage(data);
-    if (!pkt) return;
-    rawPitch.current = pkt.pitch;
-    fireRef.current = pkt.fire;
-    setPitch(pkt.pitch);
-    setFire(pkt.fire);
-  }, []);
+  // --- Poll sensor data from API ---
+  useEffect(() => {
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch("/api/sensor");
+        const data = await res.json();
+        rawPitch.current = data.pitch;
+        fireRef.current = data.fire;
+        setPitch(data.pitch);
+        setFire(data.fire);
+        setConnected(data.connected);
+      } catch {
+        setConnected(false);
+      }
+    }, POLL_INTERVAL);
 
-  const { status, connect, disconnect } = useWebSocket(onMessage);
+    return () => clearInterval(timer);
+  }, []);
 
   // --- Canvas animation loop ---
   useEffect(() => {
@@ -51,34 +57,27 @@ export default function PcPage() {
       const h = canvas!.height;
       ctx!.clearRect(0, 0, w, h);
 
-      // Background
       ctx!.fillStyle = "#111";
       ctx!.fillRect(0, 0, w, h);
 
-      // Apply deadzone
       let target = rawPitch.current;
       if (Math.abs(target) < DEADZONE) target = 0;
 
-      // Exponential smoothing
       smoothedPitch.current += SMOOTHING * (target - smoothedPitch.current);
 
-      // Map pitch [-60, 60] -> Y position
-      // pitch negative = tilt forward = move up, pitch positive = tilt back = move down
       const clampedPitch = Math.max(-60, Math.min(60, smoothedPitch.current));
-      const normalised = (clampedPitch + 60) / 120; // 0..1
+      const normalised = (clampedPitch + 60) / 120;
       const margin = 40;
       const y = margin + normalised * (h - 2 * margin);
 
       const x = 80;
       const radius = 18;
 
-      // Draw dot
       ctx!.beginPath();
       ctx!.arc(x, y, radius, 0, Math.PI * 2);
       ctx!.fillStyle = fireRef.current ? "#ff2222" : "#22ff66";
       ctx!.fill();
 
-      // Glow when firing
       if (fireRef.current) {
         ctx!.beginPath();
         ctx!.arc(x, y, radius + 8, 0, Math.PI * 2);
@@ -97,23 +96,10 @@ export default function PcPage() {
     };
   }, []);
 
-  function handleConnect() {
-    if (status === "connected") {
-      disconnect();
-    } else {
-      if (!url.startsWith("wss://")) {
-        alert("URL must start with wss://");
-        return;
-      }
-      connect(url);
-    }
-  }
-
   return (
     <div style={{ position: "relative", width: "100vw", height: "100vh", overflow: "hidden" }}>
       <canvas ref={canvasRef} style={{ display: "block", width: "100%", height: "100%" }} />
 
-      {/* HUD overlay */}
       <div
         style={{
           position: "absolute",
@@ -129,20 +115,10 @@ export default function PcPage() {
           zIndex: 10,
         }}
       >
-        <input
-          type="text"
-          placeholder="wss://your-server/ws"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          style={{ flex: "1 1 240px", minWidth: 200, padding: "6px 10px", borderRadius: 4, border: "1px solid #555", background: "#222", color: "#fff", fontSize: 14 }}
-        />
-        <button
-          onClick={handleConnect}
-          style={{ padding: "6px 18px", borderRadius: 4, border: "none", background: status === "connected" ? "#c33" : "#2a2", color: "#fff", cursor: "pointer", fontSize: 14 }}
-        >
-          {status === "connected" ? "Disconnect" : "Connect"}
-        </button>
-        <StatusBadge status={status} />
+        <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+          <span style={{ width: 10, height: 10, borderRadius: "50%", background: connected ? "#2a2" : "#666" }} />
+          {connected ? "Mobile Connected" : "Waiting for mobile..."}
+        </span>
         <span style={{ fontSize: 13, color: "#aaa" }}>
           Pitch: <b style={{ color: "#fff" }}>{pitch.toFixed(1)}</b>
         </span>
@@ -151,15 +127,5 @@ export default function PcPage() {
         </span>
       </div>
     </div>
-  );
-}
-
-function StatusBadge({ status }: { status: ConnectionStatus }) {
-  const color = status === "connected" ? "#2a2" : status === "connecting" ? "#aa2" : "#666";
-  return (
-    <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
-      <span style={{ width: 10, height: 10, borderRadius: "50%", background: color, display: "inline-block" }} />
-      {status}
-    </span>
   );
 }

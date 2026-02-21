@@ -1,18 +1,8 @@
 "use client";
 
 import { useRef, useState, useEffect, useCallback } from "react";
-import { useWebSocket, type ConnectionStatus } from "@/lib/useWebSocket";
-
-// Extend window types for iOS permission APIs
-interface DeviceOrientationEventiOS extends DeviceOrientationEvent {
-  requestPermission?: () => Promise<"granted" | "denied">;
-}
-interface DeviceMotionEventiOS extends DeviceMotionEvent {
-  requestPermission?: () => Promise<"granted" | "denied">;
-}
 
 function wrapAngle(a: number): number {
-  // wrap to [-180, 180]
   while (a > 180) a -= 360;
   while (a < -180) a += 360;
   return a;
@@ -25,37 +15,35 @@ function clamp(v: number, lo: number, hi: number): number {
 const SEND_INTERVAL = 1000 / 30; // 30 FPS
 
 export default function MobilePage() {
-  const [url, setUrl] = useState("");
   const [pitch, setPitch] = useState(0);
   const [fire, setFire] = useState(0);
   const [motionEnabled, setMotionEnabled] = useState(false);
+  const [connected, setConnected] = useState(false);
   const [permissionError, setPermissionError] = useState("");
 
   const pitchRef = useRef(0);
   const fireRef = useRef(0);
-  const sendTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const { status, connect, disconnect, send } = useWebSocket();
-
-  // --- Start sending loop when connected ---
+  // --- Auto-send sensor data via POST ---
   useEffect(() => {
-    if (status === "connected") {
-      sendTimerRef.current = setInterval(() => {
-        send(
-          JSON.stringify({
+    const timer = setInterval(async () => {
+      try {
+        await fetch("/api/sensor", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
             pitch: Math.round(pitchRef.current * 10) / 10,
             fire: fireRef.current,
-          })
-        );
-      }, SEND_INTERVAL);
-    }
-    return () => {
-      if (sendTimerRef.current) {
-        clearInterval(sendTimerRef.current);
-        sendTimerRef.current = null;
+          }),
+        });
+        setConnected(true);
+      } catch {
+        setConnected(false);
       }
-    };
-  }, [status, send]);
+    }, SEND_INTERVAL);
+
+    return () => clearInterval(timer);
+  }, []);
 
   // --- Orientation listener ---
   useEffect(() => {
@@ -76,7 +64,6 @@ export default function MobilePage() {
   // --- Touch -> fire ---
   useEffect(() => {
     function onTouchStart(e: TouchEvent) {
-      // Don't capture touches on the top control bar
       const target = e.target as HTMLElement;
       if (target.closest("[data-controls]")) return;
       fireRef.current = 1;
@@ -101,7 +88,6 @@ export default function MobilePage() {
     setPermissionError("");
 
     try {
-      // iOS 13+ requires explicit permission
       const DOE = DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> };
       const DME = DeviceMotionEvent as unknown as { requestPermission?: () => Promise<string> };
 
@@ -119,24 +105,12 @@ export default function MobilePage() {
           return;
         }
       }
-    } catch (err) {
-      // Not iOS or permission API not available -- orientation should still work
+    } catch {
+      // Not iOS or permission API not available
     }
 
     setMotionEnabled(true);
   }, []);
-
-  function handleConnect() {
-    if (status === "connected") {
-      disconnect();
-    } else {
-      if (!url.startsWith("wss://")) {
-        alert("URL must start with wss://");
-        return;
-      }
-      connect(url);
-    }
-  }
 
   return (
     <div
@@ -164,22 +138,6 @@ export default function MobilePage() {
           zIndex: 10,
         }}
       >
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <input
-            type="text"
-            placeholder="wss://your-server/ws"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            style={{ flex: "1 1 180px", minWidth: 160, padding: "8px 10px", borderRadius: 4, border: "1px solid #555", background: "#222", color: "#fff", fontSize: 14 }}
-          />
-          <button
-            onClick={handleConnect}
-            style={{ padding: "8px 18px", borderRadius: 4, border: "none", background: status === "connected" ? "#c33" : "#2a2", color: "#fff", cursor: "pointer", fontSize: 14 }}
-          >
-            {status === "connected" ? "Disconnect" : "Connect"}
-          </button>
-        </div>
-
         <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           {!motionEnabled && (
             <button
@@ -189,7 +147,10 @@ export default function MobilePage() {
               Enable Motion
             </button>
           )}
-          <StatusBadge status={status} />
+          <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+            <span style={{ width: 10, height: 10, borderRadius: "50%", background: connected ? "#2a2" : "#666" }} />
+            {connected ? "Sending" : "Connecting..."}
+          </span>
           <span style={{ fontSize: 13, color: "#aaa" }}>
             Pitch: <b style={{ color: "#fff" }}>{pitch.toFixed(1)}</b>
           </span>
@@ -215,15 +176,5 @@ export default function MobilePage() {
         {fire ? "FIRING" : "Touch & hold to fire"}
       </div>
     </div>
-  );
-}
-
-function StatusBadge({ status }: { status: ConnectionStatus }) {
-  const color = status === "connected" ? "#2a2" : status === "connecting" ? "#aa2" : "#666";
-  return (
-    <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
-      <span style={{ width: 10, height: 10, borderRadius: "50%", background: color, display: "inline-block" }} />
-      {status}
-    </span>
   );
 }
