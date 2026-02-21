@@ -215,7 +215,7 @@
       const beta  = e.beta;
       if (typeof alpha !== "number" || typeof beta !== "number") return;
 
-      alphaAbs = (alpha + 360) % 360;
+      alphaAbs = (alpha + 180 + 360) % 360;
       betaAbs = beta;
 
       // Compass display (absolute)
