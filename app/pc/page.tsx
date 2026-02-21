@@ -10,11 +10,14 @@ const POLL_INTERVAL = 1000 / 30; // 30 FPS
 export default function PcPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [pitch, setPitch] = useState(0);
+  const [roll, setRoll] = useState(0);
   const [fire, setFire] = useState(0);
   const [connected, setConnected] = useState(false);
 
   const smoothedPitch = useRef(0);
+  const smoothedRoll = useRef(0);
   const rawPitch = useRef(0);
+  const rawRoll = useRef(0);
   const fireRef = useRef(0);
 
   // --- Poll sensor data from API ---
@@ -24,8 +27,10 @@ export default function PcPage() {
         const res = await fetch("/api/sensor");
         const data = await res.json();
         rawPitch.current = data.pitch;
+        rawRoll.current = data.roll;
         fireRef.current = data.fire;
         setPitch(data.pitch);
+        setRoll(data.roll);
         setFire(data.fire);
         setConnected(data.connected);
       } catch {
@@ -60,17 +65,27 @@ export default function PcPage() {
       ctx!.fillStyle = "#111";
       ctx!.fillRect(0, 0, w, h);
 
-      let target = rawPitch.current;
-      if (Math.abs(target) < DEADZONE) target = 0;
+      // Apply deadzone
+      let targetPitch = rawPitch.current;
+      let targetRoll = rawRoll.current;
+      if (Math.abs(targetPitch) < DEADZONE) targetPitch = 0;
+      if (Math.abs(targetRoll) < DEADZONE) targetRoll = 0;
 
-      smoothedPitch.current += SMOOTHING * (target - smoothedPitch.current);
+      // Smooth the values
+      smoothedPitch.current += SMOOTHING * (targetPitch - smoothedPitch.current);
+      smoothedRoll.current += SMOOTHING * (targetRoll - smoothedRoll.current);
 
+      // Tilt forward (negative pitch) = ball goes UP, tilt back = ball goes DOWN
       const clampedPitch = Math.max(-60, Math.min(60, smoothedPitch.current));
-      const normalised = (clampedPitch + 60) / 120;
+      const clampedRoll = Math.max(-45, Math.min(45, smoothedRoll.current));
+      
+      // Invert pitch: negative pitch (tilt forward) should move ball UP (smaller y)
+      const normalisedY = (-clampedPitch + 60) / 120; // 0..1 (inverted)
+      const normalisedX = (clampedRoll + 45) / 90; // 0..1
+      
       const margin = 40;
-      const y = margin + normalised * (h - 2 * margin);
-
-      const x = 80;
+      const y = margin + normalisedY * (h - 2 * margin);
+      const x = margin + normalisedX * (w - 2 * margin);
       const radius = 18;
 
       ctx!.beginPath();
@@ -121,6 +136,9 @@ export default function PcPage() {
         </span>
         <span style={{ fontSize: 13, color: "#aaa" }}>
           Pitch: <b style={{ color: "#fff" }}>{pitch.toFixed(1)}</b>
+        </span>
+        <span style={{ fontSize: 13, color: "#aaa" }}>
+          Roll: <b style={{ color: "#fff" }}>{roll.toFixed(1)}</b>
         </span>
         <span style={{ fontSize: 13, color: "#aaa" }}>
           Fire: <b style={{ color: fire ? "#f44" : "#fff" }}>{fire}</b>

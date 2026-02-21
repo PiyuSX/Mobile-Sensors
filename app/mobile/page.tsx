@@ -16,12 +16,14 @@ const SEND_INTERVAL = 1000 / 30; // 30 FPS
 
 export default function MobilePage() {
   const [pitch, setPitch] = useState(0);
+  const [roll, setRoll] = useState(0);
   const [fire, setFire] = useState(0);
   const [motionEnabled, setMotionEnabled] = useState(false);
   const [connected, setConnected] = useState(false);
   const [permissionError, setPermissionError] = useState("");
 
   const pitchRef = useRef(0);
+  const rollRef = useRef(0);
   const fireRef = useRef(0);
 
   // --- Auto-send sensor data via POST ---
@@ -33,6 +35,7 @@ export default function MobilePage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             pitch: Math.round(pitchRef.current * 10) / 10,
+            roll: Math.round(rollRef.current * 10) / 10,
             fire: fireRef.current,
           }),
         });
@@ -50,11 +53,14 @@ export default function MobilePage() {
     if (!motionEnabled) return;
 
     function handleOrientation(e: DeviceOrientationEvent) {
-      if (e.beta == null) return;
-      const wrapped = wrapAngle(e.beta);
-      const clamped = clamp(wrapped, -60, 60);
-      pitchRef.current = clamped;
-      setPitch(clamped);
+      if (e.beta == null || e.gamma == null) return;
+      // beta = pitch (front/back tilt), gamma = roll (left/right tilt)
+      const pitchVal = clamp(wrapAngle(e.beta), -60, 60);
+      const rollVal = clamp(e.gamma, -45, 45);
+      pitchRef.current = pitchVal;
+      rollRef.current = rollVal;
+      setPitch(pitchVal);
+      setRoll(rollVal);
     }
 
     window.addEventListener("deviceorientation", handleOrientation);
@@ -153,6 +159,9 @@ export default function MobilePage() {
           </span>
           <span style={{ fontSize: 13, color: "#aaa" }}>
             Pitch: <b style={{ color: "#fff" }}>{pitch.toFixed(1)}</b>
+          </span>
+          <span style={{ fontSize: 13, color: "#aaa" }}>
+            Roll: <b style={{ color: "#fff" }}>{roll.toFixed(1)}</b>
           </span>
           <span style={{ fontSize: 13, color: "#aaa" }}>
             Fire: <b style={{ color: fire ? "#f44" : "#fff" }}>{fire}</b>

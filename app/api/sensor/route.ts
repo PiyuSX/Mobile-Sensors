@@ -5,6 +5,7 @@ export const runtime = "edge";
 
 interface SensorData {
   pitch: number;
+  roll: number;
   fire: number;
   timestamp: number;
 }
@@ -29,6 +30,7 @@ export async function POST(request: Request) {
     
     store.set(room, {
       pitch: body.pitch ?? 0,
+      roll: body.roll ?? 0,
       fire: body.fire ?? 0,
       timestamp: Date.now(),
     });
@@ -54,7 +56,7 @@ export async function GET(request: Request) {
   
   if (!data || Date.now() - data.timestamp > 2000) {
     // No recent data
-    return new Response(JSON.stringify({ pitch: 0, fire: 0, connected: false }), {
+    return new Response(JSON.stringify({ pitch: 0, roll: 0, fire: 0, connected: false }), {
       headers: { 
         "Content-Type": "application/json",
         "Cache-Control": "no-cache, no-store",
@@ -64,6 +66,7 @@ export async function GET(request: Request) {
   
   return new Response(JSON.stringify({ 
     pitch: data.pitch, 
+    roll: data.roll,
     fire: data.fire, 
     connected: true 
   }), {
