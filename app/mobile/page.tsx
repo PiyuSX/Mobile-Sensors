@@ -12,7 +12,46 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
 
-const SEND_INTERVAL = 1000 / 30; // 30 FPS
+// Complementary filter for smooth sensor fusion
+class ComplementaryFilter {
+  private value = 0;
+  private alpha: number;
+  
+  constructor(alpha = 0.85) {
+    this.alpha = alpha; // Higher = more trust in current reading
+  }
+  
+  filter(gyroRate: number, accelAngle: number, dt: number): number {
+    // Blend gyro integration with accelerometer angle
+    this.value = this.alpha * (this.value + gyroRate * dt) + (1 - this.alpha) * accelAngle;
+    return this.value;
+  }
+  
+  setValue(v: number) {
+    this.value = v;
+  }
+  
+  getValue() {
+    return this.value;
+  }
+}
+
+// Simple low-pass filter for direct angle readings
+class LowPassFilter {
+  private value = 0;
+  private alpha: number;
+  
+  constructor(smoothing = 0.3) {
+    this.alpha = smoothing;
+  }
+  
+  filter(input: number): number {
+    this.value += this.alpha * (input - this.value);
+    return this.value;
+  }
+}
+
+const SEND_INTERVAL = 1000 / 60; // 60 FPS for smoother updates
 
 export default function MobilePage() {
   const [pitch, setPitch] = useState(0);
@@ -25,6 +64,10 @@ export default function MobilePage() {
   const pitchRef = useRef(0);
   const rollRef = useRef(0);
   const fireRef = useRef(0);
+  
+  // Filters for smooth output
+  const pitchFilter = useRef(new LowPassFilter(0.4));
+  const rollFilter = useRef(new LowPassFilter(0.4));
 
   // --- Auto-send sensor data via POST ---
   useEffect(() => {
@@ -34,8 +77,8 @@ export default function MobilePage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            pitch: Math.round(pitchRef.current * 10) / 10,
-            roll: Math.round(rollRef.current * 10) / 10,
+            pitch: Math.round(pitchRef.current * 100) / 100, // Higher precision
+            roll: Math.round(rollRef.current * 100) / 100,
             fire: fireRef.current,
           }),
         });
@@ -54,9 +97,15 @@ export default function MobilePage() {
 
     function handleOrientation(e: DeviceOrientationEvent) {
       if (e.beta == null || e.gamma == null) return;
-      // beta = pitch (front/back tilt), gamma = roll (left/right tilt)
-      const pitchVal = clamp(wrapAngle(e.beta), -60, 60);
-      const rollVal = clamp(e.gamma, -45, 45);
+      
+      // Raw values
+      const rawPitch = clamp(wrapAngle(e.beta), -60, 60);
+      const rawRoll = clamp(e.gamma, -45, 45);
+      
+      // Filter for smooth output
+      const pitchVal = pitchFilter.current.filter(rawPitch);
+      const rollVal = rollFilter.current.filter(rawRoll);
+      
       pitchRef.current = pitchVal;
       rollRef.current = rollVal;
       setPitch(pitchVal);

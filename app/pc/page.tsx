@@ -2,26 +2,74 @@
 
 import { useRef, useState, useEffect } from "react";
 
-// --- Smoothing / deadzone config ---
-const SMOOTHING = 0.15;
-const DEADZONE = 2;
-const POLL_INTERVAL = 1000 / 30; // 30 FPS
+// --- Physics config ---
+const GRAVITY_SCALE = 2000; // How strongly tilt affects acceleration (pixels/s²)
+const FRICTION = 0.985; // Velocity dampening per frame (0-1, higher = less friction)
+const BOUNCE = 0.6; // Energy retained on wall bounce (0-1)
+const DEADZONE = 1.5; // Degrees - ignore tiny movements
+const POLL_INTERVAL = 1000 / 60; // 60 FPS polling
+const BALL_RADIUS = 20;
+
+// Low-pass filter for sensor smoothing
+class LowPassFilter {
+  private value = 0;
+  private alpha: number;
+  
+  constructor(cutoffHz: number, sampleRate: number) {
+    const rc = 1 / (2 * Math.PI * cutoffHz);
+    const dt = 1 / sampleRate;
+    this.alpha = dt / (rc + dt);
+  }
+  
+  filter(input: number): number {
+    this.value += this.alpha * (input - this.value);
+    return this.value;
+  }
+  
+  reset(value: number) {
+    this.value = value;
+  }
+}
+
+// Soft deadzone with smooth transition
+function applyDeadzone(value: number, deadzone: number): number {
+  const absVal = Math.abs(value);
+  if (absVal < deadzone) return 0;
+  // Smooth transition from deadzone
+  const sign = value > 0 ? 1 : -1;
+  return sign * (absVal - deadzone) * (absVal / (absVal - deadzone * 0.5));
+}
 
 export default function PcPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [pitch, setPitch] = useState(0);
-  const [roll, setRoll] = useState(0);
+  const [displayPitch, setDisplayPitch] = useState(0);
+  const [displayRoll, setDisplayRoll] = useState(0);
   const [fire, setFire] = useState(0);
   const [connected, setConnected] = useState(false);
 
-  const smoothedPitch = useRef(0);
-  const smoothedRoll = useRef(0);
+  // Physics state refs
+  const ballX = useRef(0);
+  const ballY = useRef(0);
+  const velocityX = useRef(0);
+  const velocityY = useRef(0);
+  const lastTime = useRef(0);
+  const initialized = useRef(false);
+  
+  // Sensor refs
   const rawPitch = useRef(0);
   const rawRoll = useRef(0);
   const fireRef = useRef(0);
+  
+  // Filters (initialized in useEffect)
+  const pitchFilter = useRef<LowPassFilter | null>(null);
+  const rollFilter = useRef<LowPassFilter | null>(null);
 
   // --- Poll sensor data from API ---
   useEffect(() => {
+    // Initialize filters: 8Hz cutoff at 60Hz sample rate for smooth but responsive feel
+    pitchFilter.current = new LowPassFilter(8, 60);
+    rollFilter.current = new LowPassFilter(8, 60);
+    
     const timer = setInterval(async () => {
       try {
         const res = await fetch("/api/sensor");
@@ -29,8 +77,8 @@ export default function PcPage() {
         rawPitch.current = data.pitch;
         rawRoll.current = data.roll;
         fireRef.current = data.fire;
-        setPitch(data.pitch);
-        setRoll(data.roll);
+        setDisplayPitch(data.pitch);
+        setDisplayRoll(data.roll);
         setFire(data.fire);
         setConnected(data.connected);
       } catch {
@@ -41,7 +89,7 @@ export default function PcPage() {
     return () => clearInterval(timer);
   }, []);
 
-  // --- Canvas animation loop ---
+  // --- Canvas animation loop with physics ---
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -53,51 +101,120 @@ export default function PcPage() {
     function resize() {
       canvas!.width = window.innerWidth;
       canvas!.height = window.innerHeight;
+      // Initialize ball position to center
+      if (!initialized.current) {
+        ballX.current = canvas!.width / 2;
+        ballY.current = canvas!.height / 2;
+        initialized.current = true;
+      }
     }
     resize();
     window.addEventListener("resize", resize);
+    lastTime.current = performance.now();
 
-    function frame() {
+    function frame(currentTime: number) {
       const w = canvas!.width;
       const h = canvas!.height;
-      ctx!.clearRect(0, 0, w, h);
+      
+      // Calculate delta time in seconds (capped to avoid huge jumps)
+      const dt = Math.min((currentTime - lastTime.current) / 1000, 0.05);
+      lastTime.current = currentTime;
 
+      // Clear canvas
       ctx!.fillStyle = "#111";
       ctx!.fillRect(0, 0, w, h);
 
-      // Apply deadzone
-      let targetPitch = rawPitch.current;
-      let targetRoll = rawRoll.current;
-      if (Math.abs(targetPitch) < DEADZONE) targetPitch = 0;
-      if (Math.abs(targetRoll) < DEADZONE) targetRoll = 0;
-
-      // Smooth the values
-      smoothedPitch.current += SMOOTHING * (targetPitch - smoothedPitch.current);
-      smoothedRoll.current += SMOOTHING * (targetRoll - smoothedRoll.current);
-
-      // Tilt forward (negative pitch) = ball goes UP, tilt back = ball goes DOWN
-      const clampedPitch = Math.max(-60, Math.min(60, smoothedPitch.current));
-      const clampedRoll = Math.max(-45, Math.min(45, smoothedRoll.current));
+      // Filter and apply deadzone to sensor values
+      const filteredPitch = pitchFilter.current?.filter(rawPitch.current) ?? rawPitch.current;
+      const filteredRoll = rollFilter.current?.filter(rawRoll.current) ?? rawRoll.current;
       
-      // Invert pitch: negative pitch (tilt forward) should move ball UP (smaller y)
-      const normalisedY = (-clampedPitch + 60) / 120; // 0..1 (inverted)
-      const normalisedX = (clampedRoll + 45) / 90; // 0..1
-      
-      const margin = 40;
-      const y = margin + normalisedY * (h - 2 * margin);
-      const x = margin + normalisedX * (w - 2 * margin);
-      const radius = 18;
+      const pitch = applyDeadzone(filteredPitch, DEADZONE);
+      const roll = applyDeadzone(filteredRoll, DEADZONE);
 
+      // Convert tilt angles to acceleration
+      // Pitch: negative = tilt forward = ball goes up (negative Y acceleration)
+      // Roll: positive = tilt right = ball goes right (positive X acceleration)
+      const accelX = (roll / 45) * GRAVITY_SCALE; // Normalize to -1..1, then scale
+      const accelY = (-pitch / 60) * GRAVITY_SCALE; // Inverted for natural feel
+
+      // Apply acceleration to velocity (a = F/m, simplified: v += a * dt)
+      velocityX.current += accelX * dt;
+      velocityY.current += accelY * dt;
+
+      // Apply friction (exponential decay)
+      velocityX.current *= Math.pow(FRICTION, dt * 60);
+      velocityY.current *= Math.pow(FRICTION, dt * 60);
+
+      // Update position
+      ballX.current += velocityX.current * dt;
+      ballY.current += velocityY.current * dt;
+
+      // Boundary collision with bounce
+      const minX = BALL_RADIUS + 10;
+      const maxX = w - BALL_RADIUS - 10;
+      const minY = BALL_RADIUS + 60; // Account for HUD
+      const maxY = h - BALL_RADIUS - 10;
+
+      if (ballX.current < minX) {
+        ballX.current = minX;
+        velocityX.current = -velocityX.current * BOUNCE;
+      } else if (ballX.current > maxX) {
+        ballX.current = maxX;
+        velocityX.current = -velocityX.current * BOUNCE;
+      }
+
+      if (ballY.current < minY) {
+        ballY.current = minY;
+        velocityY.current = -velocityY.current * BOUNCE;
+      } else if (ballY.current > maxY) {
+        ballY.current = maxY;
+        velocityY.current = -velocityY.current * BOUNCE;
+      }
+
+      // Draw ball with motion blur effect
+      const speed = Math.sqrt(velocityX.current ** 2 + velocityY.current ** 2);
+      const glowSize = Math.min(speed / 100, 15);
+      
+      // Glow/trail based on speed
+      if (speed > 50) {
+        const gradient = ctx!.createRadialGradient(
+          ballX.current, ballY.current, BALL_RADIUS,
+          ballX.current, ballY.current, BALL_RADIUS + glowSize
+        );
+        gradient.addColorStop(0, fireRef.current ? "rgba(255,50,50,0.4)" : "rgba(50,255,100,0.4)");
+        gradient.addColorStop(1, "transparent");
+        ctx!.fillStyle = gradient;
+        ctx!.beginPath();
+        ctx!.arc(ballX.current, ballY.current, BALL_RADIUS + glowSize, 0, Math.PI * 2);
+        ctx!.fill();
+      }
+
+      // Main ball
       ctx!.beginPath();
-      ctx!.arc(x, y, radius, 0, Math.PI * 2);
-      ctx!.fillStyle = fireRef.current ? "#ff2222" : "#22ff66";
+      ctx!.arc(ballX.current, ballY.current, BALL_RADIUS, 0, Math.PI * 2);
+      
+      // Gradient fill for 3D effect
+      const ballGradient = ctx!.createRadialGradient(
+        ballX.current - BALL_RADIUS * 0.3, ballY.current - BALL_RADIUS * 0.3, BALL_RADIUS * 0.1,
+        ballX.current, ballY.current, BALL_RADIUS
+      );
+      if (fireRef.current) {
+        ballGradient.addColorStop(0, "#ff6666");
+        ballGradient.addColorStop(1, "#cc0000");
+      } else {
+        ballGradient.addColorStop(0, "#66ff88");
+        ballGradient.addColorStop(1, "#00aa33");
+      }
+      ctx!.fillStyle = ballGradient;
       ctx!.fill();
 
+      // Fire pulse effect
       if (fireRef.current) {
+        const pulseSize = BALL_RADIUS + 8 + Math.sin(currentTime / 50) * 4;
         ctx!.beginPath();
-        ctx!.arc(x, y, radius + 8, 0, Math.PI * 2);
-        ctx!.strokeStyle = "rgba(255,34,34,0.5)";
-        ctx!.lineWidth = 4;
+        ctx!.arc(ballX.current, ballY.current, pulseSize, 0, Math.PI * 2);
+        ctx!.strokeStyle = `rgba(255,50,50,${0.3 + Math.sin(currentTime / 50) * 0.2})`;
+        ctx!.lineWidth = 3;
         ctx!.stroke();
       }
 
@@ -135,10 +252,10 @@ export default function PcPage() {
           {connected ? "Mobile Connected" : "Waiting for mobile..."}
         </span>
         <span style={{ fontSize: 13, color: "#aaa" }}>
-          Pitch: <b style={{ color: "#fff" }}>{pitch.toFixed(1)}</b>
+          Pitch: <b style={{ color: "#fff" }}>{displayPitch.toFixed(1)}</b>
         </span>
         <span style={{ fontSize: 13, color: "#aaa" }}>
-          Roll: <b style={{ color: "#fff" }}>{roll.toFixed(1)}</b>
+          Roll: <b style={{ color: "#fff" }}>{displayRoll.toFixed(1)}</b>
         </span>
         <span style={{ fontSize: 13, color: "#aaa" }}>
           Fire: <b style={{ color: fire ? "#f44" : "#fff" }}>{fire}</b>
