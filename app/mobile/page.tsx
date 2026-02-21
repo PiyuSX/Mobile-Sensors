@@ -98,11 +98,33 @@ export default function MobilePage() {
     function handleOrientation(e: DeviceOrientationEvent) {
       if (e.beta == null || e.gamma == null) return;
       
-      // Raw values
-      const rawPitch = clamp(wrapAngle(e.beta), -60, 60);
-      const rawRoll = clamp(e.gamma, -45, 45);
+      // === GUN CONTROLLER PHYSICS ===
+      // Phone held like a pistol in landscape mode:
+      // - Power button side = TOP (like top of gun)
+      // - Volume buttons = BOTTOM (like grip)
+      // - Screen = front of gun (points at target)
+      // - The dot on screen = crosshair/aim point
+      //
+      // PITCH (up/down aiming):
+      // - Raise barrel (point gun at ceiling) → aim goes UP (+pitch)
+      // - Lower barrel (point gun at floor) → aim goes DOWN (-pitch)
+      // - Uses gamma: tilting top edge up = positive gamma
+      //
+      // ROLL (left/right aiming):
+      // - Twist gun left (like turning steering wheel left) → aim goes LEFT (-roll)
+      // - Twist gun right → aim goes RIGHT (+roll)
+      // - Uses beta: adjusted for landscape orientation
       
-      // Filter for smooth output
+      // Pitch: gamma directly maps to vertical aim
+      const rawPitch = clamp(-e.gamma, -60, 60);
+      
+      // Roll: beta needs adjustment since phone is held ~horizontal
+      // When phone is level facing forward, beta ≈ 90°
+      // Subtract 90 to center it, then use for left/right
+      const adjustedBeta = e.beta - 90;
+      const rawRoll = clamp(adjustedBeta, -45, 45);
+      
+      // Smooth filtering for steady aim
       const pitchVal = pitchFilter.current.filter(rawPitch);
       const rollVal = rollFilter.current.filter(rawRoll);
       
