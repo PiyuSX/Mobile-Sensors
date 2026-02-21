@@ -2,56 +2,64 @@
 
 import { useRef, useState, useEffect, useCallback } from "react";
 
-function wrapAngle(a: number): number {
-  while (a > 180) a -= 360;
-  while (a < -180) a += 360;
-  return a;
-}
-
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
 
-// Complementary filter for smooth sensor fusion
-class ComplementaryFilter {
-  private value = 0;
-  private alpha: number;
-  
-  constructor(alpha = 0.85) {
-    this.alpha = alpha; // Higher = more trust in current reading
+// One-Euro Filter - Professional smoothing with minimal latency
+// Adapts smoothing based on speed: smooth when still, responsive when moving
+class OneEuroFilter {
+  private x: number | null = null;
+  private dx = 0;
+  private lastTime: number | null = null;
+  private minCutoff: number;
+  private beta: number;
+  private dCutoff: number;
+
+  constructor(minCutoff = 1.0, beta = 0.007, dCutoff = 1.0) {
+    this.minCutoff = minCutoff; // Minimum cutoff frequency (smoothness when slow)
+    this.beta = beta;           // Speed coefficient (responsiveness when fast)
+    this.dCutoff = dCutoff;     // Derivative cutoff frequency
   }
-  
-  filter(gyroRate: number, accelAngle: number, dt: number): number {
-    // Blend gyro integration with accelerometer angle
-    this.value = this.alpha * (this.value + gyroRate * dt) + (1 - this.alpha) * accelAngle;
-    return this.value;
+
+  private alpha(cutoff: number, dt: number): number {
+    const tau = 1.0 / (2 * Math.PI * cutoff);
+    return 1.0 / (1.0 + tau / dt);
   }
-  
-  setValue(v: number) {
-    this.value = v;
+
+  filter(value: number, timestamp?: number): number {
+    const now = timestamp ?? performance.now();
+    
+    if (this.x === null || this.lastTime === null) {
+      this.x = value;
+      this.lastTime = now;
+      return value;
+    }
+
+    const dt = Math.max((now - this.lastTime) / 1000, 0.001); // seconds
+    this.lastTime = now;
+
+    // Estimate derivative
+    const dx = (value - this.x) / dt;
+    const edx = this.alpha(this.dCutoff, dt) * dx + (1 - this.alpha(this.dCutoff, dt)) * this.dx;
+    this.dx = edx;
+
+    // Adaptive cutoff based on speed
+    const cutoff = this.minCutoff + this.beta * Math.abs(edx);
+    
+    // Filter the value
+    this.x = this.alpha(cutoff, dt) * value + (1 - this.alpha(cutoff, dt)) * this.x;
+    return this.x;
   }
-  
-  getValue() {
-    return this.value;
+
+  reset() {
+    this.x = null;
+    this.dx = 0;
+    this.lastTime = null;
   }
 }
 
-// Simple low-pass filter for direct angle readings
-class LowPassFilter {
-  private value = 0;
-  private alpha: number;
-  
-  constructor(smoothing = 0.3) {
-    this.alpha = smoothing;
-  }
-  
-  filter(input: number): number {
-    this.value += this.alpha * (input - this.value);
-    return this.value;
-  }
-}
-
-const SEND_INTERVAL = 1000 / 60; // 60 FPS for smoother updates
+const SEND_INTERVAL = 1000 / 60; // 60 FPS
 
 export default function MobilePage() {
   const [pitch, setPitch] = useState(0);
@@ -65,9 +73,13 @@ export default function MobilePage() {
   const rollRef = useRef(0);
   const fireRef = useRef(0);
   
-  // Accumulated gyro values (like a mouse - integrate rotation rate)
-  const gyroYaw = useRef(0);   // Left/right accumulated rotation
+  // Gyro integration for left/right
+  const yawAccumulator = useRef(0);
   const lastGyroTime = useRef(0);
+  
+  // One-Euro filters for buttery smooth output
+  const pitchFilter = useRef(new OneEuroFilter(1.5, 0.01, 1.0));
+  const yawFilter = useRef(new OneEuroFilter(2.0, 0.005, 1.0));
 
   // --- Auto-send sensor data via POST ---
   useEffect(() => {
@@ -91,65 +103,83 @@ export default function MobilePage() {
     return () => clearInterval(timer);
   }, []);
 
-  // --- GYROSCOPE for left/right (fast & responsive like mouse) ---
+  // --- Combined sensor handling for GUN CONTROLLER ---
+  // Orientation: Phone bottom = barrel, screen facing sideways
   useEffect(() => {
     if (!motionEnabled) return;
     
-    // Reset accumulated yaw when starting
-    gyroYaw.current = 0;
+    // Reset on enable
+    yawAccumulator.current = 0;
     lastGyroTime.current = performance.now();
+    pitchFilter.current.reset();
+    yawFilter.current.reset();
 
+    // === GYROSCOPE: Left/Right aiming (relative, like mouse) ===
     function handleMotion(e: DeviceMotionEvent) {
       if (!e.rotationRate) return;
       
       const now = performance.now();
-      const dt = (now - lastGyroTime.current) / 1000; // seconds
+      const dt = Math.max((now - lastGyroTime.current) / 1000, 0.001);
       lastGyroTime.current = now;
       
-      // In landscape mode (power button UP):
-      // rotationRate.alpha = rotation around Z axis = left/right yaw
-      // Positive = counterclockwise when looking at screen = turning LEFT
-      const yawRate = e.rotationRate.alpha ?? 0;
+      // In this orientation (bottom forward, screen sideways):
+      // rotationRate.gamma = rotation around phone's long axis (Y)
+      // This captures when you rotate your wrist/arm left or right
+      const yawRate = e.rotationRate.gamma ?? 0;
       
-      // Integrate rotation rate to get position (like mouse movement)
-      // Scale down and invert: positive rate = turning left = negative roll
-      gyroYaw.current += yawRate * dt * 0.5; // 0.5 = sensitivity factor
+      // Integrate rotation rate (like mouse delta → position)
+      // Sensitivity: degrees per second → accumulated degrees
+      yawAccumulator.current += yawRate * dt;
       
-      // Clamp to prevent going too far
-      gyroYaw.current = clamp(gyroYaw.current, -45, 45);
+      // Soft clamp with gradual resistance at edges
+      const maxYaw = 50;
+      if (Math.abs(yawAccumulator.current) > maxYaw) {
+        yawAccumulator.current *= 0.98; // Gradual pullback
+      }
+      yawAccumulator.current = clamp(yawAccumulator.current, -maxYaw, maxYaw);
       
-      // Apply directly - no filtering needed, gyro is already smooth
-      rollRef.current = -gyroYaw.current; // Invert: turn right = positive roll
-      setRoll(rollRef.current);
+      // Apply One-Euro filter for smooth output
+      const smoothYaw = yawFilter.current.filter(yawAccumulator.current, now);
+      
+      // Map to roll: positive yaw (turning right) = positive roll
+      rollRef.current = smoothYaw;
+      setRoll(smoothYaw);
+    }
+
+    // === ORIENTATION: Up/Down aiming (absolute angle) ===
+    function handleOrientation(e: DeviceOrientationEvent) {
+      if (e.beta == null) return;
+      
+      const now = performance.now();
+      
+      // In this orientation (bottom=barrel, screen=sideways):
+      // BETA = forward/backward tilt of the barrel
+      // When barrel points up → beta decreases (or increases depending on screen direction)
+      // When barrel points down → beta changes opposite direction
+      //
+      // Neutral position: phone roughly horizontal, barrel pointing forward
+      // beta ≈ 90° when phone is vertical screen-up, 0° when flat
+      // When held gun-style with barrel forward, beta is around 80-100°
+      
+      // Center around 90° (horizontal forward), invert for natural feel
+      // Barrel up (beta < 90) → positive pitch → aim up
+      // Barrel down (beta > 90) → negative pitch → aim down
+      const rawPitch = clamp(90 - e.beta, -60, 60);
+      
+      // Apply One-Euro filter
+      const smoothPitch = pitchFilter.current.filter(rawPitch, now);
+      
+      pitchRef.current = smoothPitch;
+      setPitch(smoothPitch);
     }
 
     window.addEventListener("devicemotion", handleMotion);
-    return () => window.removeEventListener("devicemotion", handleMotion);
-  }, [motionEnabled]);
-
-  // --- ORIENTATION for up/down (gamma is perfect for this) ---
-  useEffect(() => {
-    if (!motionEnabled) return;
-
-    function handleOrientation(e: DeviceOrientationEvent) {
-      if (e.gamma == null) return;
-      
-      // === GUN CONTROLLER - LANDSCAPE MODE ===
-      // Phone held sideways: power button UP, volume DOWN, screen facing you
-      //
-      // GAMMA controls vertical aim (pitch):
-      // - Tilt "barrel" UP (raise power button edge) → gamma negative → aim UP
-      // - Tilt "barrel" DOWN → gamma positive → aim DOWN
-      
-      // Direct mapping, no filtering for instant response
-      const rawPitch = clamp(-e.gamma, -60, 60);
-      
-      pitchRef.current = rawPitch;
-      setPitch(rawPitch);
-    }
-
     window.addEventListener("deviceorientation", handleOrientation);
-    return () => window.removeEventListener("deviceorientation", handleOrientation);
+    
+    return () => {
+      window.removeEventListener("devicemotion", handleMotion);
+      window.removeEventListener("deviceorientation", handleOrientation);
+    };
   }, [motionEnabled]);
 
   // --- Touch -> fire ---
@@ -236,6 +266,14 @@ export default function MobilePage() {
               style={{ padding: "8px 18px", borderRadius: 4, border: "none", background: "#36a", color: "#fff", cursor: "pointer", fontSize: 14 }}
             >
               Enable Motion
+            </button>
+          )}
+          {motionEnabled && (
+            <button
+              onClick={() => { yawAccumulator.current = 0; }}
+              style={{ padding: "8px 18px", borderRadius: 4, border: "none", background: "#444", color: "#fff", cursor: "pointer", fontSize: 14 }}
+            >
+              Recenter
             </button>
           )}
           <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>

@@ -3,10 +3,10 @@
 import { useRef, useState, useEffect } from "react";
 
 // --- Config ---
-const SENSITIVITY = 1.0; // Adjust aim sensitivity
-const DEADZONE = 0.5; // Degrees - ignore tiny jitter
+const SENSITIVITY = 1.2; // Aim sensitivity multiplier
 const POLL_INTERVAL = 1000 / 60; // 60 FPS polling
-const CROSSHAIR_SIZE = 30;
+const CROSSHAIR_SIZE = 25;
+const LERP_SPEED = 0.15; // Smoothing factor for crosshair movement (0-1, higher = faster)
 
 export default function PcPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -15,9 +15,13 @@ export default function PcPage() {
   const [fire, setFire] = useState(0);
   const [connected, setConnected] = useState(false);
 
-  // Aim position (direct, no physics)
-  const aimX = useRef(0.5); // 0-1 normalized
-  const aimY = useRef(0.5); // 0-1 normalized
+  // Target aim position (from sensor)
+  const targetX = useRef(0.5);
+  const targetY = useRef(0.5);
+  
+  // Current smoothed aim position (for display)
+  const currentX = useRef(0.5);
+  const currentY = useRef(0.5);
   
   // Sensor refs
   const rawPitch = useRef(0);
@@ -52,7 +56,7 @@ export default function PcPage() {
     return () => clearInterval(timer);
   }, []);
 
-  // --- Canvas animation loop - DIRECT AIM (no physics) ---
+  // --- Canvas animation loop ---
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -72,27 +76,30 @@ export default function PcPage() {
       const w = canvas!.width;
       const h = canvas!.height;
 
-      // Clear canvas with dark background
-      ctx!.fillStyle = "#111";
+      // Clear canvas
+      ctx!.fillStyle = "#0a0a0a";
       ctx!.fillRect(0, 0, w, h);
       
-      // Apply deadzone
-      const pitch = Math.abs(rawPitch.current) < DEADZONE ? 0 : rawPitch.current;
-      const roll = Math.abs(rawRoll.current) < DEADZONE ? 0 : rawRoll.current;
-
-      // DIRECT AIM - Map sensor values directly to screen position
-      // Roll (-45 to +45) → X position (0 to 1)
-      // Pitch (-60 to +60) → Y position (0 to 1)
-      aimX.current = 0.5 + (roll / 45) * 0.5 * SENSITIVITY;
-      aimY.current = 0.5 - (pitch / 60) * 0.5 * SENSITIVITY; // Inverted: pitch up = screen up
+      // Calculate target position from sensor values
+      // Roll (-50 to +50) → X (0 to 1)
+      // Pitch (-60 to +60) → Y (0 to 1)
+      const pitch = rawPitch.current;
+      const roll = rawRoll.current;
       
-      // Clamp to screen bounds
-      aimX.current = Math.max(0.05, Math.min(0.95, aimX.current));
-      aimY.current = Math.max(0.08, Math.min(0.95, aimY.current)); // Account for HUD
+      targetX.current = 0.5 + (roll / 50) * 0.45 * SENSITIVITY;
+      targetY.current = 0.5 - (pitch / 60) * 0.45 * SENSITIVITY;
+      
+      // Clamp targets
+      targetX.current = Math.max(0.03, Math.min(0.97, targetX.current));
+      targetY.current = Math.max(0.06, Math.min(0.97, targetY.current));
+      
+      // Smooth interpolation (lerp) for buttery movement
+      currentX.current += (targetX.current - currentX.current) * LERP_SPEED;
+      currentY.current += (targetY.current - currentY.current) * LERP_SPEED;
       
       // Convert to pixel coordinates
-      const crossX = aimX.current * w;
-      const crossY = aimY.current * h;
+      const crossX = currentX.current * w;
+      const crossY = currentY.current * h;
       
       // Check if recently fired (for muzzle flash effect)
       const timeSinceFire = currentTime - lastFireTime.current;
