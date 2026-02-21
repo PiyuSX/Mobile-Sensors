@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
-  <title>iPhone Run + Aim Test</title>
+  <title>iPhone Run + Aim + Jump + Sit</title>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 16px; }
     button { font-size: 18px; padding: 12px 16px; }
@@ -11,215 +11,307 @@
     .row { display:flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #f2f2f2; }
     .row:last-child { border-bottom: none; }
     .k { color: #444; }
-    .v { font-variant-numeric: tabular-nums; font-weight: 600; }
-    .ok { color: #0a7; font-weight: 800; }
-    .bad { color: #c20; font-weight: 800; }
+    .v { font-variant-numeric: tabular-nums; font-weight: 700; }
+    .ok { color: #0a7; font-weight: 900; }
+    .bad { color: #c20; font-weight: 900; }
+    .mid { color: #b60; font-weight: 900; }
     small { color: #666; }
+    .pill {
+      display:inline-block; padding: 6px 10px; border-radius: 999px;
+      border: 1px solid #eee; background:#fafafa; font-weight:800;
+    }
   </style>
 </head>
 <body>
-  <h2>Run + Aim Detector</h2>
-  <p><small>Tap enable. Then aim by rotating phone. For running: bounce/step in place (small hops) with phone in hand or pocket.</small></p>
+  <h2>Run + Aim + Jump + Sit Detector</h2>
+  <p><small>
+    Tap enable. Aim by rotating phone. Running: step/bounce in place (best: phone in pocket).
+    Jump: do a small jump while holding phone (or in pocket). Double-tap anywhere to re-calibrate aim.
+  </small></p>
 
   <button id="btn">Tap to Enable Motion</button>
 
   <div class="box">
     <div>Status: <span id="status" class="bad">Not started</span></div>
-    <div><small>If values don’t change, open in Safari and allow Motion & Orientation.</small></div>
+    <div><small>If values don’t change, open in Safari and allow Motion & Orientation access.</small></div>
   </div>
 
   <div class="box">
-    <h3>Aim</h3>
-    <div class="row"><div class="k">Yaw (deg)</div><div class="v" id="yaw">—</div></div>
-    <div class="row"><div class="k">Pitch (deg)</div><div class="v" id="pitch">—</div></div>
-    <div class="row"><div class="k">Direction</div><div class="v" id="dir">—</div></div>
+    <h3>Aim / Direction</h3>
+    <div class="row"><div class="k">Compass (alpha)</div><div class="v" id="compass">—</div></div>
+    <div class="row"><div class="k">Compass label</div><div class="v" id="compassLabel">—</div></div>
+    <div class="row"><div class="k">Yaw (relative)</div><div class="v" id="yaw">—</div></div>
+    <div class="row"><div class="k">Pitch (relative)</div><div class="v" id="pitch">—</div></div>
+    <div class="row"><div class="k">Aim label</div><div class="v" id="aimLabel">—</div></div>
   </div>
 
   <div class="box">
     <h3>Movement</h3>
-    <div class="row"><div class="k">State</div><div class="v" id="moveState">—</div></div>
+    <div class="row"><div class="k">Move state</div><div class="v" id="moveState">—</div></div>
     <div class="row"><div class="k">Step rate (steps/s)</div><div class="v" id="stepRate">—</div></div>
     <div class="row"><div class="k">Last step (ms ago)</div><div class="v" id="lastStepAgo">—</div></div>
-    <div><small>
-      Tip: Put phone in pocket for best step signal. If it false-triggers, increase threshold in code (RUN_THRESHOLD).
-    </small></div>
   </div>
 
   <div class="box">
-    <h3>Raw (useful for tuning)</h3>
-    <div class="row"><div class="k">accMag (m/s²)</div><div class="v" id="accMag">—</div></div>
-    <div class="row"><div class="k">accLP (m/s²)</div><div class="v" id="accLP">—</div></div>
-    <div class="row"><div class="k">accHP (m/s²)</div><div class="v" id="accHP">—</div></div>
+    <h3>Actions / Pose</h3>
+    <div class="row"><div class="k">Jump</div><div class="v" id="jumpState"><span class="pill">—</span></div></div>
+    <div class="row"><div class="k">Pose</div><div class="v" id="poseState"><span class="pill">—</span></div></div>
   </div>
 
-  <script>
-    const $ = (id) => document.getElementById(id);
-    const fmt = (n, d=2) => (typeof n === "number" && isFinite(n) ? n.toFixed(d) : "—");
+  <div class="box">
+    <h3>Raw (for tuning)</h3>
+    <div class="row"><div class="k">accMag</div><div class="v" id="accMag">—</div></div>
+    <div class="row"><div class="k">accLP</div><div class="v" id="accLP">—</div></div>
+    <div class="row"><div class="k">accHP</div><div class="v" id="accHP">—</div></div>
+    <div><small>
+      If running/jump is wrong, we tune thresholds: STEP_THRESHOLD, JUMP_SPIKE, etc.
+    </small></div>
+  </div>
 
-    function setStatus(ok, msg) {
-      const el = $("status");
-      el.textContent = msg;
-      el.className = ok ? "ok" : "bad";
-    }
+<script>
+  const $ = (id) => document.getElementById(id);
+  const fmt = (n, d=2) => (typeof n === "number" && isFinite(n) ? n.toFixed(d) : "—");
 
-    // ===== Aim tracking =====
-    let yaw0 = null;   // calibration offset
-    let pitch0 = null;
+  function setStatus(ok, msg) {
+    const el = $("status");
+    el.textContent = msg;
+    el.className = ok ? "ok" : "bad";
+  }
 
-    function wrapDeg(x) {
-      // wrap to [-180, 180)
-      x = ((x + 180) % 360 + 360) % 360 - 180;
-      return x;
-    }
+  // ====== CONFIG (tune these) ======
+  // Step detection (running)
+  const STEP_THRESHOLD = 1.6;      // accHP peak threshold for a step
+  const MIN_STEP_MS = 180;         // debounce (ms)
+  const STOP_TIMEOUT_MS = 900;     // no step for this long => STOPPED
+  const RUN_RATE_THRESHOLD = 2.2;  // steps/sec => RUNNING
 
-    function aimLabel(yawDeg, pitchDeg) {
-      // yaw: left/right, pitch: up/down (simple labels)
-      const lr = yawDeg > 10 ? "Right" : yawDeg < -10 ? "Left" : "Center";
-      const ud = pitchDeg > 10 ? "Down" : pitchDeg < -10 ? "Up" : "Level";
-      return `${ud} + ${lr}`;
-    }
+  // Filters
+  const LP_ALPHA = 0.90;           // low-pass smooth (0.85-0.95)
 
-    // ===== Running/Stopped detection =====
-    // We detect steps from high-pass filtered acceleration magnitude.
-    // Works best with phone in pocket. In-hand also works with small bounces.
+  // Jump detection (heuristic):
+  // Trigger jump if we see a large positive spike, then (optional) a short low-magnitude phase.
+  const JUMP_SPIKE = 5.5;          // accHP spike threshold
+  const JUMP_COOLDOWN_MS = 900;    // prevent multiple jumps from one motion
+  const JUMP_FLASH_MS = 700;       // show "JUMP!" this long
 
-    // Tune these if needed:
-    const STEP_THRESHOLD = 1.6;     // high-pass magnitude peak threshold (m/s^2) for a "step"
-    const MIN_STEP_MS = 180;        // ignore peaks closer than this (debounce)
-    const STOP_TIMEOUT_MS = 900;    // if no step for this long => STOPPED
-    const RUN_RATE_THRESHOLD = 2.2; // steps per second => RUNNING (else WALKING/STOPPED)
+  // Sitting/standing (heuristic):
+  // We treat "SITTING" if pitch absolute (beta) stays in a "tilted" range for a bit.
+  // If phone is in pocket, beta often becomes more stable; tune for your carry style.
+  const SIT_PITCH_DEG = 55;        // |beta| above this suggests seated/leaned pose
+  const SIT_HOLD_MS = 900;         // must hold that long to mark SITTING
+  const POSE_STABLE_DELTA = 6;     // beta variation allowed during hold
 
-    // Low-pass filter for acc magnitude
-    const LP_ALPHA = 0.90; // closer to 1 = smoother low-pass
+  // ====== Helpers ======
+  function wrapDeg(x) {
+    x = ((x + 180) % 360 + 360) % 360 - 180;
+    return x;
+  }
 
-    let accLP = 0;       // low-pass of magnitude
-    let lastStepTs = 0;  // ms timestamp
-    let lastPeakTs = 0;
+  function compassLabel(alphaDeg) {
+    // 8-direction
+    const dirs = ["N","NE","E","SE","S","SW","W","NW"];
+    const idx = Math.round(alphaDeg / 45) % 8;
+    return dirs[idx];
+  }
 
-    // Keep step timestamps for rate estimation
-    const stepTimes = []; // array of ms timestamps (last 2 seconds)
+  function aimLabel(yawDeg, pitchDeg) {
+    const lr = yawDeg > 10 ? "Right" : yawDeg < -10 ? "Left" : "Center";
+    const ud = pitchDeg > 10 ? "Down" : pitchDeg < -10 ? "Up" : "Level";
+    return `${ud} + ${lr}`;
+  }
 
-    function nowMs() { return performance.now(); }
+  function pill(text, cls) {
+    return `<span class="pill ${cls||""}">${text}</span>`;
+  }
 
-    function updateStepRate(t) {
-      // keep only last 2 seconds
-      while (stepTimes.length && (t - stepTimes[0]) > 2000) stepTimes.shift();
-      const seconds = 2.0;
-      return stepTimes.length / seconds; // steps per second
-    }
+  // ====== State ======
+  let started = false;
 
-    function movementState(t, rate) {
-      const since = t - lastStepTs;
-      if (!lastStepTs || since > STOP_TIMEOUT_MS) return "STOPPED";
-      if (rate >= RUN_RATE_THRESHOLD) return "RUNNING";
-      return "MOVING";
-    }
+  // Aim calibration offsets
+  let yaw0 = null;
+  let pitch0 = null;
 
-    // ===== Permission + listeners =====
-    let started = false;
+  // Orientation values
+  let alphaAbs = null; // 0..360
+  let betaAbs = null;  // -180..180
 
-    async function requestIOSPermissionIfNeeded() {
-      const DME = window.DeviceMotionEvent;
-      const DOE = window.DeviceOrientationEvent;
+  // Step detection state
+  let accLP = 0;
+  let lastStepTs = 0;
+  let lastPeakTs = 0;
+  const stepTimes = [];
 
-      try {
-        if (DME && typeof DME.requestPermission === "function") {
-          const res = await DME.requestPermission();
-          if (res !== "granted") throw new Error("DeviceMotion denied");
-        }
-        if (DOE && typeof DOE.requestPermission === "function") {
-          const res = await DOE.requestPermission();
-          if (res !== "granted") throw new Error("DeviceOrientation denied");
-        }
-        return true;
-      } catch (e) {
-        console.error(e);
-        setStatus(false, "Permission denied ❌");
-        return false;
+  // Jump detection state
+  let lastJumpTs = 0;
+  let jumpFlashUntil = 0;
+
+  // Sit detection state
+  let sitCandidateStart = 0;
+  let sitCandidateBeta0 = 0;
+  let pose = "—";
+
+  function nowMs() { return performance.now(); }
+
+  function updateStepRate(t) {
+    while (stepTimes.length && (t - stepTimes[0]) > 2000) stepTimes.shift();
+    return stepTimes.length / 2.0; // steps/sec over last 2s
+  }
+
+  function movementState(t, rate) {
+    const since = t - lastStepTs;
+    if (!lastStepTs || since > STOP_TIMEOUT_MS) return "STOPPED";
+    if (rate >= RUN_RATE_THRESHOLD) return "RUNNING";
+    return "MOVING";
+  }
+
+  function setMoveStateUI(state) {
+    const el = $("moveState");
+    el.textContent = state;
+    el.className = state === "RUNNING" ? "ok" : (state === "STOPPED" ? "bad" : "mid");
+  }
+
+  function setJumpUI(isJumping) {
+    $("jumpState").innerHTML = isJumping ? pill("JUMP!", "ok") : pill("—", "");
+  }
+
+  function setPoseUI(p) {
+    // p in {"SITTING","STANDING","—"}
+    let cls = "";
+    if (p === "SITTING") cls = "mid";
+    if (p === "STANDING") cls = "ok";
+    $("poseState").innerHTML = pill(p, cls);
+  }
+
+  // ====== Permission & start ======
+  async function requestIOSPermissionIfNeeded() {
+    const DME = window.DeviceMotionEvent;
+    const DOE = window.DeviceOrientationEvent;
+
+    try {
+      if (DME && typeof DME.requestPermission === "function") {
+        const res = await DME.requestPermission();
+        if (res !== "granted") throw new Error("DeviceMotion denied");
       }
+      if (DOE && typeof DOE.requestPermission === "function") {
+        const res = await DOE.requestPermission();
+        if (res !== "granted") throw new Error("DeviceOrientation denied");
+      }
+      return true;
+    } catch (e) {
+      console.error(e);
+      setStatus(false, "Permission denied ❌");
+      return false;
     }
+  }
 
-    function startListeners() {
-      if (started) return;
-      started = true;
-      setStatus(true, "Running ✅ (sensors active)");
+  function startListeners() {
+    if (started) return;
+    started = true;
+    setStatus(true, "Sensors active ✅");
 
-      // Orientation -> aim
-      window.addEventListener("deviceorientation", (e) => {
-        // alpha/beta/gamma in degrees (may be null in some cases)
-        const alpha = e.alpha; // 0..360 (compass-ish yaw)
-        const beta  = e.beta;  // -180..180 (pitch)
-        if (typeof alpha !== "number" || typeof beta !== "number") return;
+    // Orientation -> aim + compass
+    window.addEventListener("deviceorientation", (e) => {
+      const alpha = e.alpha;
+      const beta  = e.beta;
+      if (typeof alpha !== "number" || typeof beta !== "number") return;
 
-        // Calibrate zero on first reading
-        if (yaw0 === null) yaw0 = alpha;
-        if (pitch0 === null) pitch0 = beta;
+      alphaAbs = (alpha + 360) % 360;
+      betaAbs = beta;
 
-        const yaw = wrapDeg(alpha - yaw0);     // left/right relative
-        const pitch = wrapDeg(beta - pitch0);  // up/down relative
+      // Compass display (absolute)
+      $("compass").textContent = fmt(alphaAbs, 1) + "°";
+      $("compassLabel").textContent = compassLabel(alphaAbs);
 
-        $("yaw").textContent = fmt(yaw, 1);
-        $("pitch").textContent = fmt(pitch, 1);
-        $("dir").textContent = aimLabel(yaw, pitch);
-      }, true);
+      // Calibrate relative aim offsets
+      if (yaw0 === null) yaw0 = alphaAbs;
+      if (pitch0 === null) pitch0 = betaAbs;
 
-      // Motion -> steps/running
-      window.addEventListener("devicemotion", (e) => {
-        const a = e.acceleration; // without gravity (can be null sometimes)
-        const ag = e.accelerationIncludingGravity;
+      const yaw = wrapDeg(alphaAbs - yaw0);
+      const pitch = wrapDeg(betaAbs - pitch0);
 
-        // Prefer acceleration without gravity; fallback to includingGravity if needed
-        const src = (a && typeof a.x === "number") ? a : ag;
-        if (!src) return;
+      $("yaw").textContent = fmt(yaw, 1) + "°";
+      $("pitch").textContent = fmt(pitch, 1) + "°";
+      $("aimLabel").textContent = aimLabel(yaw, pitch);
 
-        const ax = src.x || 0, ay = src.y || 0, az = src.z || 0;
+      // Pose detection based on ABS beta (not relative)
+      const t = nowMs();
+      const b = betaAbs;
 
-        // magnitude
-        const mag = Math.sqrt(ax*ax + ay*ay + az*az);
-
-        // low-pass and high-pass
-        accLP = LP_ALPHA * accLP + (1 - LP_ALPHA) * mag;
-        const accHP = mag - accLP;
-
-        $("accMag").textContent = fmt(mag, 3);
-        $("accLP").textContent = fmt(accLP, 3);
-        $("accHP").textContent = fmt(accHP, 3);
-
-        // detect a "step" on positive peaks over threshold with debounce
-        const t = nowMs();
-        if (accHP > STEP_THRESHOLD && (t - lastPeakTs) > MIN_STEP_MS) {
-          lastPeakTs = t;
-
-          // record step
-          lastStepTs = t;
-          stepTimes.push(t);
+      if (Math.abs(b) >= SIT_PITCH_DEG) {
+        if (!sitCandidateStart) {
+          sitCandidateStart = t;
+          sitCandidateBeta0 = b;
+        } else {
+          const held = (t - sitCandidateStart);
+          const stable = Math.abs(b - sitCandidateBeta0) <= POSE_STABLE_DELTA;
+          if (held >= SIT_HOLD_MS && stable) pose = "SITTING";
         }
+      } else {
+        // If not in sit range, reset candidate and mark standing
+        sitCandidateStart = 0;
+        pose = "STANDING";
+      }
+      setPoseUI(pose);
 
-        const rate = updateStepRate(t);
-        const state = movementState(t, rate);
+    }, true);
 
-        $("stepRate").textContent = fmt(rate, 2);
-        $("moveState").textContent = state;
+    // Motion -> running + jump
+    window.addEventListener("devicemotion", (e) => {
+      const a = e.acceleration;
+      const ag = e.accelerationIncludingGravity;
+      const src = (a && typeof a.x === "number") ? a : ag;
+      if (!src) return;
 
-        const ago = lastStepTs ? (t - lastStepTs) : NaN;
-        $("lastStepAgo").textContent = lastStepTs ? fmt(ago, 0) : "—";
+      const ax = src.x || 0, ay = src.y || 0, az = src.z || 0;
+      const mag = Math.sqrt(ax*ax + ay*ay + az*az);
 
-        // Color feedback
-        $("moveState").className = (state === "RUNNING") ? "ok" : (state === "STOPPED" ? "bad" : "v");
-      }, true);
+      accLP = LP_ALPHA * accLP + (1 - LP_ALPHA) * mag;
+      const accHP = mag - accLP;
 
-      // Let user recalibrate by double-tapping anywhere
-      document.body.addEventListener("dblclick", () => {
-        yaw0 = null;
-        pitch0 = null;
-      });
-    }
+      $("accMag").textContent = fmt(mag, 3);
+      $("accLP").textContent = fmt(accLP, 3);
+      $("accHP").textContent = fmt(accHP, 3);
 
-    $("btn").addEventListener("click", async () => {
-      setStatus(false, "Requesting permission…");
-      const ok = await requestIOSPermissionIfNeeded();
-      if (ok) startListeners();
+      const t = nowMs();
+
+      // Step detection: positive peaks over threshold
+      if (accHP > STEP_THRESHOLD && (t - lastPeakTs) > MIN_STEP_MS) {
+        lastPeakTs = t;
+        lastStepTs = t;
+        stepTimes.push(t);
+      }
+
+      const rate = updateStepRate(t);
+      $("stepRate").textContent = fmt(rate, 2);
+      const state = movementState(t, rate);
+      setMoveStateUI(state);
+
+      const ago = lastStepTs ? (t - lastStepTs) : NaN;
+      $("lastStepAgo").textContent = lastStepTs ? fmt(ago, 0) : "—";
+
+      // Jump detection (heuristic)
+      const canJump = (t - lastJumpTs) > JUMP_COOLDOWN_MS;
+      if (canJump && accHP > JUMP_SPIKE) {
+        lastJumpTs = t;
+        jumpFlashUntil = t + JUMP_FLASH_MS;
+      }
+
+      setJumpUI(t < jumpFlashUntil);
+
+    }, true);
+
+    // Double tap anywhere to recalibrate aim center
+    document.body.addEventListener("dblclick", () => {
+      yaw0 = null;
+      pitch0 = null;
     });
-  </script>
+  }
+
+  $("btn").addEventListener("click", async () => {
+    setStatus(false, "Requesting permission…");
+    const ok = await requestIOSPermissionIfNeeded();
+    if (ok) startListeners();
+  });
+</script>
 </body>
 </html>
